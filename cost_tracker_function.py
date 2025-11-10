@@ -4,7 +4,7 @@ description: This function is designed to manage and calculate the costs associa
 author: bgeneto
 author_url: https://github.com/bgeneto/open-webui-cost-tracker
 funding_url: https://github.com/open-webui
-version: 0.4.0
+version: 0.5.0
 license: MIT
 requirements: requests, tiktoken, cachetools, pydantic
 environment_variables:
@@ -28,6 +28,10 @@ from cachetools import TTLCache, cached
 from open_webui.utils.misc import get_last_assistant_message, get_messages_content
 from pydantic import BaseModel, Field
 
+
+MANUAL_MODEL_MAPPINGS = {
+    "/gpt-oss-120b": "groq/openai/gpt-oss-120b",
+}
 
 class Config:
     DATA_DIR = "data"
@@ -207,8 +211,15 @@ class ModelCostManager:
         return dp[m][n]
 
     def _find_best_match(self, query: str, json_data) -> str:
-        # Exact match search
+        # Check manual mappings first
         query_lower = query.lower()
+        if query_lower in MANUAL_MODEL_MAPPINGS:
+            manual_match = MANUAL_MODEL_MAPPINGS[query_lower]
+            if Config.DEBUG:
+                print(f"{Config.DEBUG_PREFIX} Using manual mapping: '{query}' -> '{manual_match}'")
+            return manual_match
+        
+        # Exact match search
         keys_lower = {key.lower(): key for key in json_data.keys()}
 
         if query_lower in keys_lower:
@@ -335,6 +346,7 @@ class Filter:
             "openai",
             "github",
             "google_genai",
+            "anthropic",
         ]
         suffixes = ["-tuned"]
         # remove prefixes and suffixes
