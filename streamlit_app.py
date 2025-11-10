@@ -42,47 +42,91 @@ def process_data(data: List[Dict[str, Any]]) -> pd.DataFrame:
     """Process the data by extracting the month, model, cost, and user.
 
     Args:
-        data: A list of dictionaries containing cost records.
+        data: A list of dictionaries containing cost records, or a dictionary
+              with user emails as keys and lists of records as values.
 
     Returns:
         A pandas DataFrame with processed data.
     """
     processed_data = []
-    # Iterate through each record in the list
-    for record in data:
-        try:
-            timestamp = datetime.datetime.strptime(
-                record["timestamp"], "%Y-%m-%dT%H:%M:%S.%f"
-            )
-            month = timestamp.strftime("%Y-%m")
-            model = record["model"]
-            cost = record["total_cost"]
-            user_email = record["user"] # Get user email directly from the record
+    
+    # Check if data is a dictionary (user email keys) or a list
+    if isinstance(data, dict):
+        # Data structure: {"user@email.com": [records...], ...}
+        for user_email, records in data.items():
+            if not isinstance(records, list):
+                st.error(f"Expected a list of records for user {user_email}, got {type(records)}")
+                continue
+            
+            for record in records:
+                try:
+                    timestamp = datetime.datetime.strptime(
+                        record["timestamp"], "%Y-%m-%dT%H:%M:%S.%f"
+                    )
+                    month = timestamp.strftime("%Y-%m")
+                    model = record["model"]
+                    cost = record["total_cost"]
 
-            # Ensure cost is a float
-            if isinstance(cost, str):
-                cost = float(cost)
+                    # Ensure cost is a float
+                    if isinstance(cost, str):
+                        cost = float(cost)
 
-            total_tokens = record["input_tokens"] + record["output_tokens"]
+                    total_tokens = record["input_tokens"] + record["output_tokens"]
 
-            processed_data.append(
-                {
-                    "month": month,
-                    "model": model,
-                    "total_cost": cost,
-                    "user": user_email,
-                    "total_tokens": total_tokens,
-                }
-            )
-        except KeyError as e:
-            st.error(f"Missing key in record: {e}. Record: {record}")
-            continue
-        except ValueError:
-            st.error(f"Invalid cost or token value in record: {record}")
-            continue
-        except Exception as e:
-            st.error(f"An error occurred processing record: {record}. Error: {e}")
-            continue
+                    processed_data.append(
+                        {
+                            "month": month,
+                            "model": model,
+                            "total_cost": cost,
+                            "user": user_email,
+                            "total_tokens": total_tokens,
+                        }
+                    )
+                except KeyError as e:
+                    st.error(f"Missing key in record: {e}. Record: {record}")
+                    continue
+                except ValueError:
+                    st.error(f"Invalid cost or token value in record: {record}")
+                    continue
+                except Exception as e:
+                    st.error(f"An error occurred processing record for user {user_email}: {e}")
+                    continue
+    else:
+        # Data structure: [records...] where each record has a "user" field
+        for record in data:
+            try:
+                timestamp = datetime.datetime.strptime(
+                    record["timestamp"], "%Y-%m-%dT%H:%M:%S.%f"
+                )
+                month = timestamp.strftime("%Y-%m")
+                model = record["model"]
+                cost = record["total_cost"]
+                user_email = record["user"] # Get user email directly from the record
+
+                # Ensure cost is a float
+                if isinstance(cost, str):
+                    cost = float(cost)
+
+                total_tokens = record["input_tokens"] + record["output_tokens"]
+
+                processed_data.append(
+                    {
+                        "month": month,
+                        "model": model,
+                        "total_cost": cost,
+                        "user": user_email,
+                        "total_tokens": total_tokens,
+                    }
+                )
+            except KeyError as e:
+                st.error(f"Missing key in record: {e}. Record: {record}")
+                continue
+            except ValueError:
+                st.error(f"Invalid cost or token value in record: {record}")
+                continue
+            except Exception as e:
+                st.error(f"An error occurred processing record: {record}. Error: {e}")
+                continue
 
     if not processed_data:
         st.warning("No valid data found to process.")
