@@ -4,7 +4,7 @@ description: This function is designed to manage and calculate the costs associa
 author: bgeneto
 author_url: https://github.com/bgeneto/open-webui-cost-tracker
 funding_url: https://github.com/open-webui
-version: 0.5.0
+version: 0.5.2
 license: MIT
 requirements: requests, tiktoken, cachetools, pydantic
 environment_variables:
@@ -48,18 +48,6 @@ class Config:
 # Initialize cache
 cache = TTLCache(maxsize=Config.CACHE_MAXSIZE, ttl=Config.CACHE_TTL)
 
-
-def get_encoding(model):
-    try:
-        return tiktoken.encoding_for_model(model)
-    except KeyError:
-        if Config.DEBUG:
-            print(
-                f"{Config.DEBUG_PREFIX} Encoding for model {model} not found. Using cl100k_base for computing tokens."
-            )
-        return tiktoken.get_encoding("cl100k_base")
-
-
 class UserCostManager:
     def __init__(self, cost_file_path):
         self.cost_file_path = cost_file_path
@@ -85,6 +73,8 @@ class UserCostManager:
         input_tokens: int,
         output_tokens: int,
         total_cost: Decimal,
+        is_image_generation: bool = False,
+        image_count: int = 0,
     ):
         costs = self._read_costs()
         timestamp = datetime.now().isoformat()
@@ -92,15 +82,21 @@ class UserCostManager:
         if user_email not in costs:
             costs[user_email] = []
 
-        costs[user_email].append(
-            {
-                "model": model,
-                "timestamp": timestamp,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "total_cost": str(total_cost),
-            }
-        )
+        entry = {
+            "model": model,
+            "timestamp": timestamp,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_cost": str(total_cost),
+        }
+        
+        if is_image_generation:
+            entry["type"] = "image_generation"
+            entry["image_count"] = image_count
+        else:
+            entry["type"] = "chat_completion"
+
+        costs[user_email].append(entry)
 
         self._write_costs(costs)
 
@@ -318,6 +314,12 @@ class Filter:
         tokens_per_sec: bool = Field(
             default=True, description="Display tokens per second metric"
         )
+        track_image_generation: bool = Field(
+            default=True, description="Track image generation costs"
+        )
+        image_cost_per_generation: float = Field(
+            default=0.039, description="Cost per image generated (USD)"
+        )
         debug: bool = Field(default=False, description="Display debugging messages")
         pass
 
@@ -331,6 +333,8 @@ class Filter:
         )
         self.start_time = None
         self.input_tokens = 0
+        self.image_generation_detected = False
+        self.image_count = 0
         pass
 
     def _sanitize_model_name(self, name: str) -> str:
@@ -407,6 +411,30 @@ class Filter:
     ) -> dict:
 
         Config.DEBUG = self.valves.debug
+        
+        # Check for image generation in metadata
+        metadata = body.get("metadata", {})
+        task = metadata.get("task", "")
+        
+        # Check if this is an image generation task
+        image_gen_feature = body.get("features", {}).get("image_generation", {})
+        image_gen_enabled = (
+            image_gen_feature.get("enabled", False) 
+            if isinstance(image_gen_feature, dict) 
+            else bool(image_gen_feature)
+        )
+        
+        self.image_generation_detected = (
+            "IMAGE_GENERATION" in str(task) or 
+            "IMAGE_PROMPT_GENERATION" in str(task) or
+            image_gen_enabled
+        )
+        
+        if Config.DEBUG:
+            print(f"{Config.DEBUG_PREFIX} Image generation detected: {self.image_generation_detected}")
+            print(f"{Config.DEBUG_PREFIX} Task: {task}")
+            print(f"{Config.DEBUG_PREFIX} Body keys: {list(body.keys())}")
+        
         enc = tiktoken.get_encoding("cl100k_base")
         input_content = self._remove_roles(
             get_messages_content(body["messages"])
@@ -438,6 +466,20 @@ class Filter:
         elapsed_time = end_time - self.start_time
 
         model = self._get_model(body)
+        
+        # Set image count if image generation was detected in inlet
+        if self.image_generation_detected:
+            self.image_count = 1
+            
+            await __event_emitter__(
+                {
+                    "type": "status",
+                    "data": {
+                        "description": "🖼️ Generated 1 image",
+                        "done": False,
+                    },
+                }
+            )
         
         # Log the response body structure for debugging
         if Config.DEBUG:
@@ -486,9 +528,21 @@ class Filter:
             if Config.DEBUG:
                 print(f"{Config.DEBUG_PREFIX} Using tiktoken estimation: input={input_tokens}, output={output_tokens}")
 
-        total_cost = self.cost_calculator.calculate_costs(
-            model, input_tokens, output_tokens, self.valves.compensation
-        )
+        if self.image_generation_detected and self.valves.track_image_generation:
+            image_cost = Decimal(str(self.valves.image_cost_per_generation)) * self.image_count
+            token_cost = self.cost_calculator.calculate_costs(
+                model, input_tokens, output_tokens, self.valves.compensation
+            )
+            total_cost = image_cost + token_cost
+            
+            if Config.DEBUG:
+                print(f"{Config.DEBUG_PREFIX} Image cost: ${image_cost:.6f} ({self.image_count} images)")
+                print(f"{Config.DEBUG_PREFIX} Token cost: ${token_cost:.6f}")
+                print(f"{Config.DEBUG_PREFIX} Total cost: ${total_cost:.6f}")
+        else:
+            total_cost = self.cost_calculator.calculate_costs(
+                model, input_tokens, output_tokens, self.valves.compensation
+            )
 
         if __user__:
             if "email" in __user__:
@@ -502,6 +556,8 @@ class Filter:
                     input_tokens,
                     output_tokens,
                     total_cost,
+                    is_image_generation=self.image_generation_detected,
+                    image_count=self.image_count,
                 )
             except Exception as _:
                 print("**ERROR: Unable to update user cost file!")
@@ -518,6 +574,10 @@ class Filter:
             stats_array.append(f"{tokens_per_sec:.2f} T/s")
         if self.valves.number_of_tokens:
             stats_array.append(f"{tokens} Tokens")
+        
+        # Add image count if applicable
+        if self.image_generation_detected and self.image_count > 0:
+            stats_array.append(f"{self.image_count} 🖼️")
 
         if float(total_cost) < float(Config.DECIMALS):
             stats_array.append(f"${total_cost:.2f}")
