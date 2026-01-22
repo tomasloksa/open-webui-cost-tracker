@@ -4,7 +4,7 @@ description: This function is designed to manage and calculate the costs associa
 author: bgeneto
 author_url: https://github.com/bgeneto/open-webui-cost-tracker
 funding_url: https://github.com/open-webui
-version: 0.5.2
+version: 0.5.3
 license: MIT
 requirements: requests, tiktoken, cachetools, pydantic
 environment_variables:
@@ -75,6 +75,7 @@ class UserCostManager:
         total_cost: Decimal,
         is_image_generation: bool = False,
         image_count: int = 0,
+        web_search_count: int = 0,
     ):
         costs = self._read_costs()
         timestamp = datetime.now().isoformat()
@@ -95,6 +96,9 @@ class UserCostManager:
             entry["image_count"] = image_count
         else:
             entry["type"] = "chat_completion"
+        
+        if web_search_count > 0:
+            entry["web_search_count"] = web_search_count
 
         costs[user_email].append(entry)
 
@@ -335,6 +339,8 @@ class Filter:
         self.input_tokens = 0
         self.image_generation_detected = False
         self.image_count = 0
+        self.web_search_detected = False
+        self.search_count = 0
         pass
 
     def _sanitize_model_name(self, name: str) -> str:
@@ -481,6 +487,46 @@ class Filter:
                 }
             )
         
+        # Check for web search in the response body (outlet phase)
+        # Web search data is in the messages.sources array
+        self.web_search_detected = False
+        self.search_count = 0
+        
+        messages = body.get("messages", [])
+        for msg in messages:
+            if isinstance(msg, dict):
+                # Check for sources which indicate web search was used
+                sources = msg.get("sources", [])
+                for source_item in sources:
+                    if isinstance(source_item, dict):
+                        source = source_item.get("source", {})
+                        if isinstance(source, dict) and source.get("type") == "web_search":
+                            self.web_search_detected = True
+                            queries = source.get("queries", [])
+                            if queries:
+                                self.search_count = len(queries)
+                            else:
+                                self.search_count = 1
+                            break
+                if self.web_search_detected:
+                    break
+        
+        if Config.DEBUG:
+            print(f"{Config.DEBUG_PREFIX} Web search detected in outlet: {self.web_search_detected}")
+            print(f"{Config.DEBUG_PREFIX} Search count: {self.search_count}")
+        
+        # Log web search activity if detected
+        if self.web_search_detected and self.search_count > 0:
+            await __event_emitter__(
+                {
+                    "type": "status",
+                    "data": {
+                        "description": f"🔍 Performed {self.search_count} web search{'es' if self.search_count != 1 else ''}",
+                        "done": False,
+                    },
+                }
+            )
+        
         # Log the response body structure for debugging
         if Config.DEBUG:
             print(f"{Config.DEBUG_PREFIX} Response body keys: {list(body.keys())}")
@@ -558,6 +604,7 @@ class Filter:
                     total_cost,
                     is_image_generation=self.image_generation_detected,
                     image_count=self.image_count,
+                    web_search_count=self.search_count,
                 )
             except Exception as _:
                 print("**ERROR: Unable to update user cost file!")
@@ -578,6 +625,10 @@ class Filter:
         # Add image count if applicable
         if self.image_generation_detected and self.image_count > 0:
             stats_array.append(f"{self.image_count} 🖼️")
+        
+        # Add web search count if applicable
+        if self.web_search_detected and self.search_count > 0:
+            stats_array.append(f"{self.search_count} 🔍")
 
         if float(total_cost) < float(Config.DECIMALS):
             stats_array.append(f"${total_cost:.2f}")

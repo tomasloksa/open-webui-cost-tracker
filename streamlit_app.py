@@ -73,6 +73,7 @@ def process_data(data: List[Dict[str, Any]]) -> pd.DataFrame:
 
                     total_tokens = record["input_tokens"] + record["output_tokens"]
                     image_count = record.get("image_count", 0)
+                    web_search_count = record.get("web_search_count", 0)
                     record_type = record.get("type", "chat_completion")
 
                     processed_data.append(
@@ -83,6 +84,7 @@ def process_data(data: List[Dict[str, Any]]) -> pd.DataFrame:
                             "user": user_email,
                             "total_tokens": total_tokens,
                             "image_count": image_count,
+                            "web_search_count": web_search_count,
                             "type": record_type,
                         }
                     )
@@ -113,6 +115,7 @@ def process_data(data: List[Dict[str, Any]]) -> pd.DataFrame:
 
                 total_tokens = record["input_tokens"] + record["output_tokens"]
                 image_count = record.get("image_count", 0)
+                web_search_count = record.get("web_search_count", 0)
                 record_type = record.get("type", "chat_completion")
 
                 processed_data.append(
@@ -123,6 +126,7 @@ def process_data(data: List[Dict[str, Any]]) -> pd.DataFrame:
                         "user": user_email,
                         "total_tokens": total_tokens,
                         "image_count": image_count,
+                        "web_search_count": web_search_count,
                         "type": record_type,
                     }
                 )
@@ -139,7 +143,7 @@ def process_data(data: List[Dict[str, Any]]) -> pd.DataFrame:
     if not processed_data:
         st.warning("No valid data found to process.")
         # Return an empty DataFrame with expected columns to avoid downstream errors
-        return pd.DataFrame(columns=["month", "model", "total_cost", "user", "total_tokens", "image_count", "type"])
+        return pd.DataFrame(columns=["month", "model", "total_cost", "user", "total_tokens", "image_count", "web_search_count", "type"])
 
     return pd.DataFrame(processed_data)
 
@@ -164,8 +168,9 @@ def plot_data(data: pd.DataFrame, month: str) -> None:
     total_cost_month = month_data["total_cost"].sum()
     total_tokens_month = month_data["total_tokens"].sum()
     total_images_month = month_data["image_count"].sum()
+    total_searches_month = month_data["web_search_count"].sum()
     
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         st.metric("Total Messages/Prompts", f"{total_messages:,}")
     with col2:
@@ -174,6 +179,8 @@ def plot_data(data: pd.DataFrame, month: str) -> None:
         st.metric("Total Tokens", f"{total_tokens_month:,}")
     with col4:
         st.metric("🖼️ Images Generated", f"{int(total_images_month):,}")
+    with col5:
+        st.metric("🔍 Web Searches", f"{int(total_searches_month):,}")
     
     st.divider()
 
@@ -214,18 +221,19 @@ def plot_data(data: pd.DataFrame, month: str) -> None:
     # ---------------------------------
     # User Cost and Token Bar Plot
     # ---------------------------------
-    # Group by user and sum both total_cost, total_tokens, and image_count
+    # Group by user and sum both total_cost, total_tokens, image_count, and web_search_count
     month_data_users = (
-        month_data.groupby("user")[["total_cost", "total_tokens", "image_count"]]
+        month_data.groupby("user")[["total_cost", "total_tokens", "image_count", "web_search_count"]]
         .sum()
         .reset_index()
     )
     month_data_users = month_data_users.sort_values(by="total_cost", ascending=False)
 
-    # Calculate totals for cost, tokens, and images
+    # Calculate totals for cost, tokens, images, and searches
     total_cost_sum = month_data_users["total_cost"].sum()
     total_tokens_sum = month_data_users["total_tokens"].sum()
     total_images_sum = month_data_users["image_count"].sum()
+    total_searches_sum = month_data_users["web_search_count"].sum()
 
     # Create the 'Total' row DataFrame
     total_row = pd.DataFrame(
@@ -234,6 +242,7 @@ def plot_data(data: pd.DataFrame, month: str) -> None:
             "total_cost": [total_cost_sum],
             "total_tokens": [total_tokens_sum],
             "image_count": [total_images_sum],
+            "web_search_count": [total_searches_sum],
         }
     )
 
